@@ -1,0 +1,155 @@
+import pandas as pd
+from datetime import datetime
+import os
+
+# --- Configuration ---
+LEARNWORLDS_CSV = "/Users/walid/Desktop/Audit/Lwmock.csv"
+METORIK_CSV = "/Users/walid/Desktop/Audit/Order_Data.csv"
+OUTPUT_CSV = "audit_results.csv"
+
+SESSION_EXPIRY_MAP = {
+    "MJ25": "2025-06-30",
+    "ON25": "2025-11-30",
+    "MJ26": "2026-06-30",
+    "ON26": "2026-11-30"
+}
+
+PRODUCT_TAG_MAP = {
+    "Plus Plans [A Level] - per month": ("Plus User", "30 Days"),
+    "Plus Plans [A Level] - Quarterly": ("Plus User", "90 Days"),
+    "Plus Plans [A Level] - Yearly": ("Plus User", "365 Days"),
+    "Solo Pass - Chemistry": ("Solo Pass Chemistry", "30 Days"),
+    "Solo Pass - Physics": ("Solo Pass Physics", "30 Days"),
+    "Solo Pass - Mathematics": ("Solo Pass Mathematics", "30 Days"),
+    "Solo Pass - Biology": ("Solo Pass Biology", "30 Days"),
+    "Solo Pass - Accounting": ("Solo Pass Accounting", "30 Days"),
+    "Solo Pass - Business": ("Solo Pass Business", "30 Days"),
+    "Solo Pass - Economics": ("Solo Pass Economics", "30 Days"),
+    "Solo Pass - Psychology": ("Solo Pass Psychology", "30 Days"),
+    "All access - Exam Pass": ("Exam Pass 25", "Will Last May/June 25"),
+    "All Access - Exam Pass O/N 25": ("Exam Pass 25/ON", "Will Last Oct/Nov 25"),
+    "All access - Exam Pass M/J 26": ("Exam Pass 26/MJ", "Will Last May/June 26"),
+    "All access – Exam Pass O/N 26": ("Exam Pass 26/ON", "Will Last Oct/Nov 26"),
+    "Solo Exam Pass - Chemistry, M/J 25": ("Solo EP MJ25 Chemistry", "Will Last May/June 25"),
+    "Solo Exam Pass - Physics, M/J 25": ("Solo EP MJ25 Physics", "Will Last May/June 25"),
+    "Solo Exam Pass - Mathematics, M/J 25": ("Solo EP MJ25 Mathematics", "Will Last May/June 25"),
+    "Solo Exam Pass - Business, M/J 25": ("Solo EP MJ25 Business", "Will Last May/June 25"),
+    "Solo Exam Pass - Economics, M/J 25": ("Solo EP MJ25 Economics", "Will Last May/June 25"),
+    "Solo Exam Pass - Accounting, M/J 25": ("Solo EP MJ25 Accounting", "Will Last May/June 25"),
+    "Solo Exam Pass - Biology, M/J 25": ("Solo EP MJ25 Biology", "Will Last May/June 25"),
+    "Solo Exam Pass - Psychology, M/J 25": ("Solo EP MJ25 Psychology", "Will Last May/June 25"),
+    "Solo Exam Pass - Chemistry, O/N 25": ("Solo EP ON25 Chemistry", "Will Last Oct/Nov 25"),
+    "Solo Exam Pass - Physics, O/N 25": ("Solo EP ON25 Physics", "Will Last Oct/Nov 25"),
+    "Solo Exam Pass - Mathematics, O/N 25": ("Solo EP ON25 Mathematics", "Will Last Oct/Nov 25"),
+    "Solo Exam Pass - Business, O/N 25": ("Solo EP ON25 Business", "Will Last Oct/Nov 25"),
+    "Solo Exam Pass - Economics, O/N 25": ("Solo EP ON25 Economics", "Will Last Oct/Nov 25"),
+    "Solo Exam Pass - Accounting, O/N 25": ("Solo EP ON25 Accounting", "Will Last Oct/Nov 25"),
+    "Solo Exam Pass - Biology, O/N 25": ("Solo EP ON25 Biology", "Will Last Oct/Nov 25"),
+    "Solo Exam Pass - Psychology, O/N 25": ("Solo EP ON25 Psychology", "Will Last Oct/Nov 25"),
+    "Solo Exam Pass - Chemistry, M/J 26": ("Solo EP MJ26 Chemistry", "Will Last May/June 26"),
+    "Solo Exam Pass - Physics, M/J 26": ("Solo EP MJ26 Physics", "Will Last May/June 26"),
+    "Solo Exam Pass - Mathematics, M/J 26": ("Solo EP MJ26 Mathematics", "Will Last May/June 26"),
+    "Solo Exam Pass - Business, M/J 26": ("Solo EP MJ26 Business", "Will Last May/June 26"),
+    "Solo Exam Pass - Economics, M/J 26": ("Solo EP MJ26 Economics", "Will Last May/June 26"),
+    "Solo Exam Pass - Accounting, M/J 26": ("Solo EP MJ26 Accounting", "Will Last May/June 26"),
+    "Solo Exam Pass - Biology, M/J 26": ("Solo EP MJ26 Biology", "Will Last May/June 26"),
+    "Solo Exam Pass - Psychology, M/J 26": ("Solo EP MJ26 Psychology", "Will Last May/June 26")
+}
+
+# --- Helper Functions ---
+def normalize_email(email):
+    return str(email).strip().lower() if pd.notnull(email) else ""
+
+def normalize_tag(tag):
+    replacements = {
+        "Math": "Mathematics",
+        "Psycology": "Psychology",
+        "Computer science": "Computer Science"
+    }
+    for bad, good in replacements.items():
+        tag = tag.replace(bad, good)
+    return tag.strip()
+
+def extract_session(tag):
+    for key in SESSION_EXPIRY_MAP:
+        if key in tag:
+            return key
+    return None
+
+def calculate_expiry(order_date, duration_text, tag):
+    if "Day" in duration_text:
+        try:
+            days = int(duration_text.split()[0])
+            return order_date + pd.Timedelta(days=days)
+        except:
+            return None
+    elif "Will Last" in duration_text:
+        session = extract_session(tag)
+        if session and session in SESSION_EXPIRY_MAP:
+            return datetime.strptime(SESSION_EXPIRY_MAP[session], "%Y-%m-%d")
+    return None
+
+def build_entitlement_map(order_df):
+    entitlements = {}
+    for _, row in order_df.iterrows():
+        email = normalize_email(row['Billing Address Email'])
+        order_date = pd.to_datetime(row['Order Completed At'], errors='coerce')
+        products = str(row['Line Items']).split("\n")
+
+        for product in products:
+            product = product.strip()
+            if product in PRODUCT_TAG_MAP:
+                tag, duration = PRODUCT_TAG_MAP[product]
+                expiry = calculate_expiry(order_date, duration, tag)
+                if email not in entitlements:
+                    entitlements[email] = {}
+                if tag not in entitlements[email] or (expiry and expiry > entitlements[email][tag]):
+                    entitlements[email][tag] = expiry
+
+    print("\n✅ ENTITLEMENTS BUILT")
+    for email, tags in entitlements.items():
+        print(f"{email}:")
+        for tag, expiry in tags.items():
+            print(f"   - {tag}: {expiry}")
+
+    return entitlements
+
+def audit_user_access(lw_df, entitlements):
+    today = datetime.today()
+    results = []
+    for _, row in lw_df.iterrows():
+        email = normalize_email(row.get('email', ''))
+        user_tags = str(row.get('tags', '')).split(',')
+        for tag in user_tags:
+            tag = normalize_tag(tag.strip())
+            expiry = entitlements.get(email, {}).get(tag)
+            if expiry:
+                decision = "Keep" if expiry >= today else "Remove"
+                reason = f"Valid until {expiry.date()}"
+            else:
+                decision = "Remove"
+                reason = "No active entitlement"
+            results.append({
+                'Email': email,
+                'User': row.get('username', ''),
+                'Tag': tag,
+                'Decision': decision,
+                'Reason': reason,
+                'Expiry': expiry.date() if expiry else "N/A"
+            })
+    return pd.DataFrame(results)
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    lw_df = pd.read_csv(LEARNWORLDS_CSV)
+    met_df = pd.read_csv(METORIK_CSV)
+
+    entitlements = build_entitlement_map(met_df)
+    audit_df = audit_user_access(lw_df, entitlements)
+
+    print("\n📋 AUDIT RESULTS")
+    for _, row in audit_df.iterrows():
+        print(f"{row['User']} ({row['Email']}) → {row['Tag']} → {row['Decision']} ({row['Reason']})")
+
+    audit_df.to_csv(OUTPUT_CSV, index=False)
+    print(f"\n💾 Audit results saved to: {os.path.abspath(OUTPUT_CSV)}")
